@@ -12,6 +12,9 @@ from typing import Optional, Dict, Sequence
 import numpy as np
 from tqdm import tqdm
 import logging
+from unittest.mock import MagicMock
+
+sys.modules['bitsandbytes'] = MagicMock()
 
 import pandas as pd
 import importlib
@@ -27,10 +30,9 @@ from transformers import (
     AutoModelForCausalLM,
     set_seed,
     Seq2SeqTrainer,
-    BitsAndBytesConfig,
     LlamaTokenizer
-
 )
+
 from datasets import load_dataset, Dataset
 import evaluate
 
