@@ -26,9 +26,17 @@ import transformers
 from torch.nn.utils.rnn import pad_sequence
 import argparse
 
-os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = '1'
-if 'bitsandbytes' in sys.modules:
-    del sys.modules['bitsandbytes']
+import importlib.util
+from types import ModuleType
+
+# Create a proper mock module with __spec__
+mock_bnb = ModuleType("bitsandbytes")
+mock_spec = importlib.util.spec_from_loader("bitsandbytes", loader=None)
+mock_bnb.__spec__ = mock_spec
+mock_bnb.__version__ = "0.41.0"
+
+sys.modules['bitsandbytes'] = mock_bnb
+sys.modules['bitsandbytes.nn'] = ModuleType("bitsandbytes.nn")
 
 from transformers import (
     AutoTokenizer,
