@@ -25,6 +25,11 @@ import torch
 import transformers
 from torch.nn.utils.rnn import pad_sequence
 import argparse
+
+os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = '1'
+if 'bitsandbytes' in sys.modules:
+    del sys.modules['bitsandbytes']
+
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
