@@ -1,35 +1,11 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from collections import defaultdict
-import copy
-import json
-import os
-from os.path import exists, join, isdir
-from dataclasses import dataclass, field
 import sys
-from typing import Optional, Dict, Sequence
-import numpy as np
-from tqdm import tqdm
-import logging
-from unittest.mock import MagicMock
-
-sys.modules['bitsandbytes'] = MagicMock()
-
-import pandas as pd
-import importlib
-from packaging import version
-from packaging.version import parse
-
-import torch
-import transformers
-from torch.nn.utils.rnn import pad_sequence
-import argparse
-
 import importlib.util
 from types import ModuleType
 
-# Create a proper mock module with __spec__
+# Create proper mock module with __spec__
 mock_bnb = ModuleType("bitsandbytes")
 mock_spec = importlib.util.spec_from_loader("bitsandbytes", loader=None)
 mock_bnb.__spec__ = mock_spec
@@ -38,6 +14,27 @@ mock_bnb.__version__ = "0.41.0"
 sys.modules['bitsandbytes'] = mock_bnb
 sys.modules['bitsandbytes.nn'] = ModuleType("bitsandbytes.nn")
 
+# Step 2: Now import everything else
+from collections import defaultdict
+import copy
+import json
+import os
+from os.path import exists, join, isdir
+from dataclasses import dataclass, field
+from typing import Optional, Dict, Sequence
+import numpy as np
+from tqdm import tqdm
+import logging
+
+import pandas as pd
+from packaging import version
+from packaging.version import parse
+
+import torch
+import transformers  # This will now work
+from torch.nn.utils.rnn import pad_sequence
+import argparse
+
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
@@ -45,10 +42,8 @@ from transformers import (
     Seq2SeqTrainer,
     LlamaTokenizer
 )
-
 from datasets import load_dataset, Dataset
 import evaluate
-
 
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 
