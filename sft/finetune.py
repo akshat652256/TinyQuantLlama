@@ -4,6 +4,7 @@
 import sys
 import importlib.util
 from types import ModuleType
+from unittest.mock import MagicMock
 
 # Create proper mock module with __spec__
 mock_bnb = ModuleType("bitsandbytes")
@@ -11,10 +12,19 @@ mock_spec = importlib.util.spec_from_loader("bitsandbytes", loader=None)
 mock_bnb.__spec__ = mock_spec
 mock_bnb.__version__ = "0.41.0"
 
-sys.modules['bitsandbytes'] = mock_bnb
-sys.modules['bitsandbytes.nn'] = ModuleType("bitsandbytes.nn")
+# Create nn submodule with required classes
+mock_nn = ModuleType("bitsandbytes.nn")
+mock_nn.Linear8bitLt = MagicMock()
+mock_nn.Linear4bit = MagicMock()
 
-# Step 2: Now import everything else
+# Add nn to the main module
+mock_bnb.nn = mock_nn
+
+# Register in sys.modules
+sys.modules['bitsandbytes'] = mock_bnb
+sys.modules['bitsandbytes.nn'] = mock_nn
+
+# Now import everything else
 from collections import defaultdict
 import copy
 import json
@@ -31,7 +41,7 @@ from packaging import version
 from packaging.version import parse
 
 import torch
-import transformers  # This will now work
+import transformers
 from torch.nn.utils.rnn import pad_sequence
 import argparse
 
