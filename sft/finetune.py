@@ -1,6 +1,3 @@
-# This source code is licensed under the MIT license found in the
-# LICENSE file in the root directory of this source tree.
-
 import sys
 import importlib.util
 from types import ModuleType
@@ -188,34 +185,38 @@ class GenerationArguments:
     length_penalty: Optional[float] = field(default=1.0)
     no_repeat_ngram_size: Optional[int] = field(default=0)
 
+
+
+
+
 def get_accelerate_model(args, checkpoint_dir):
-    import torch
-    
-    # Clear cache before loading
-    torch.cuda.empty_cache()
-    
+
+
+
+
     device_map = "auto"
-    
+
+    # if we are in a distributed setting, we need to set the device map and max memory per device
     if os.environ.get('LOCAL_RANK') is not None:
         local_rank = int(os.environ.get('LOCAL_RANK', '0'))
         device_map = {'': local_rank}
-    
+
+
     print(f'loading base model {args.model_name_or_path}...')
-    
-    # Load model in FP32 first, let mixed precision training handle conversion
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name_or_path,
         device_map=device_map,
         trust_remote_code=args.trust_remote_code,
-        # Remove torch_dtype - let FP16 training handle it
-        low_cpu_mem_usage=True,
     )
-    
+
+
+
+
     # Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_name_or_path,
         padding_side="right",
-        use_fast=True,
+        use_fast=True, # Fast tokenizer giving issues.
         trust_remote_code=args.trust_remote_code,
     )
     if tokenizer._pad_token is None:
@@ -223,15 +224,14 @@ def get_accelerate_model(args, checkpoint_dir):
         if args.dataset == "OpenAssistant/oasst_top1_2023-08-25":
             chat_special_tokens = ["<|im_start|>", "<|im_end|>"]
             special_tokens_dict.update(additional_special_tokens=chat_special_tokens)
-        
+
         smart_tokenizer_and_embedding_resize(
             special_tokens_dict=special_tokens_dict,
             tokenizer=tokenizer,
             model=model
         )
-    
-    return model, tokenizer
 
+    return model, tokenizer
 
 def print_trainable_parameters(args, model):
     """
