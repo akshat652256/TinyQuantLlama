@@ -1,33 +1,33 @@
-import sys
-import importlib.util
-from types import ModuleType
-import torch.nn as nn
+# import sys
+# import importlib.util
+# from types import ModuleType
+# import torch.nn as nn
 
-# Create proper mock module with __spec__
-mock_bnb = ModuleType("bitsandbytes")
-mock_spec = importlib.util.spec_from_loader("bitsandbytes", loader=None)
-mock_bnb.__spec__ = mock_spec
-mock_bnb.__version__ = "0.41.0"
+# # Create proper mock module with __spec__
+# mock_bnb = ModuleType("bitsandbytes")
+# mock_spec = importlib.util.spec_from_loader("bitsandbytes", loader=None)
+# mock_bnb.__spec__ = mock_spec
+# mock_bnb.__version__ = "0.41.0"
 
-# Create nn.Module-based mock classes to avoid metaclass conflicts
-class Linear8bitLt(nn.Module):
-    def __init__(self, *args, **kwargs):
-        super().__init__()
+# # Create nn.Module-based mock classes to avoid metaclass conflicts
+# class Linear8bitLt(nn.Module):
+#     def __init__(self, *args, **kwargs):
+#         super().__init__()
     
-class Linear4bit(nn.Module):
-    def __init__(self, *args, **kwargs):
-        super().__init__()
+# class Linear4bit(nn.Module):
+#     def __init__(self, *args, **kwargs):
+#         super().__init__()
 
-# Create nn submodule
-mock_nn = ModuleType("bitsandbytes.nn")
-mock_nn.Linear8bitLt = Linear8bitLt
-mock_nn.Linear4bit = Linear4bit
+# # Create nn submodule
+# mock_nn = ModuleType("bitsandbytes.nn")
+# mock_nn.Linear8bitLt = Linear8bitLt
+# mock_nn.Linear4bit = Linear4bit
 
-mock_bnb.nn = mock_nn
+# mock_bnb.nn = mock_nn
 
-# Register in sys.modules
-sys.modules['bitsandbytes'] = mock_bnb
-sys.modules['bitsandbytes.nn'] = mock_nn
+# # Register in sys.modules
+# sys.modules['bitsandbytes'] = mock_bnb
+# sys.modules['bitsandbytes.nn'] = mock_nn
 # Now import everything else
 from collections import defaultdict
 import copy
