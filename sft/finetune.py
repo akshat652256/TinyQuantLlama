@@ -534,7 +534,14 @@ def train():
         print('Detected that training was already completed!')
 
     model, tokenizer = get_accelerate_model(args, checkpoint_dir)
-
+    print("Model class:", model.__class__)
+    print("Model module:", model.__class__.__module__)
+    try:
+        module = importlib.import_module(model.__class__.__module__)
+        print("Model file path:", module.__file__)
+    except Exception as e:
+        print("Could not get model file path:", e)
+        
     model.config.use_cache = False
     print('loaded model')
     set_seed(args.seed)
