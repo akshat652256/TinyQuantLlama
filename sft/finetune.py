@@ -542,17 +542,13 @@ def train():
     data_module = make_data_module(tokenizer=tokenizer, args=args)
     
     trainer = Seq2SeqTrainer(
-        model=model,
-        tokenizer=tokenizer,
-        args=training_args,
-        **{k:v for k,v in data_module.items() if k != 'predict_dataset'},
-    )
+    model=model,
+    args=training_args,
+    **{k: v for k, v in data_module.items() if k != 'predict_dataset'},
+)
 
-
-   
-        
-
-        
+    # Manually attach the tokenizer (new Trainer doesn’t accept it as arg)
+    trainer.tokenizer = tokenizer
 
     # Verifying the datatypes and parameter counts before training.
     print_trainable_parameters(args, model)
