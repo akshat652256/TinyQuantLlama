@@ -28,6 +28,7 @@ mock_bnb.nn = mock_nn
 # Register in sys.modules
 sys.modules['bitsandbytes'] = mock_bnb
 sys.modules['bitsandbytes.nn'] = mock_nn
+
 # Now import everything else
 from collections import defaultdict
 import copy
@@ -53,6 +54,7 @@ import argparse
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
+    AutoConfig,
     set_seed,
     Seq2SeqTrainer,
     BitsAndBytesConfig,
@@ -84,6 +86,15 @@ class ModelArguments:
     trust_remote_code: Optional[bool] = field(
         default=False,
         metadata={"help": "Enable unpickling of arbitrary code in AutoModelForCausalLM#from_pretrained."}
+    )
+    # Routing-specific arguments
+    routing_layers: Optional[str] = field(
+        default=None,
+        metadata={"help": "Comma-separated list of layer indices where routing should be applied, e.g., '8,16,24'"}
+    )
+    router_reduction_factor: Optional[int] = field(
+        default=4,
+        metadata={"help": "Reduction factor for router dimensions"}
     )
 
 
@@ -130,9 +141,6 @@ class TrainingArguments(transformers.Seq2SeqTrainingArguments):
         default=False,
         metadata={"help": "Whether to train on the input in addition to the target text."}
     )
-
-
-
 
     report_to: str = field(
         default='none',
@@ -190,13 +198,7 @@ class GenerationArguments:
     no_repeat_ngram_size: Optional[int] = field(default=0)
 
 
-
-
-
 def get_accelerate_model(args, checkpoint_dir):
-
-
-
 
     device_map = "auto"
 
@@ -205,16 +207,31 @@ def get_accelerate_model(args, checkpoint_dir):
         local_rank = int(os.environ.get('LOCAL_RANK', '0'))
         device_map = {'': local_rank}
 
-
     print(f'loading base model {args.model_name_or_path}...')
+    
+    # Load config and modify it for routing if specified
+    config = AutoConfig.from_pretrained(
+        args.model_name_or_path,
+        trust_remote_code=args.trust_remote_code,
+    )
+    
+    # Add routing configuration if specified
+    if args.routing_layers is not None:
+        routing_layers = [int(x.strip()) for x in args.routing_layers.split(',')]
+        print(f"Enabling routing on layers: {routing_layers}")
+        config.routing_layers = routing_layers
+        config.router_reduction_factor = args.router_reduction_factor
+    else:
+        # Set empty routing layers if not specified
+        config.routing_layers = []
+        config.router_reduction_factor = args.router_reduction_factor
+    
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name_or_path,
+        config=config,
         device_map=device_map,
         trust_remote_code=args.trust_remote_code,
     )
-
-
-
 
     # Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
@@ -243,14 +260,24 @@ def print_trainable_parameters(args, model):
     """
     trainable_params = 0
     all_param = 0
-    for _, param in model.named_parameters():
+    router_params = 0
+    
+    for name, param in model.named_parameters():
         all_param += param.numel()
         if param.requires_grad:
             trainable_params += param.numel()
+        # Count router parameters
+        if 'router' in name.lower():
+            router_params += param.numel()
+    
     print(
         f"trainable params: {trainable_params} || "
         f"all params: {all_param} || "
+        f"trainable%: {100 * trainable_params / all_param:.2f}%"
     )
+    
+    if router_params > 0:
+        print(f"router params: {router_params} || router%: {100 * router_params / all_param:.2f}%")
 
 def smart_tokenizer_and_embedding_resize(
     special_tokens_dict: Dict,
@@ -550,6 +577,11 @@ def train():
     except Exception as e:
         print("Could not get config file path:", e)   
     
+    # Print routing configuration
+    if hasattr(model.config, 'routing_layers'):
+        print(f"\nRouting enabled on layers: {model.config.routing_layers}")
+        print(f"Router reduction factor: {model.config.router_reduction_factor}")
+    
     model.config.use_cache = False
     print('loaded model')
     set_seed(args.seed)
@@ -557,12 +589,12 @@ def train():
     data_module = make_data_module(tokenizer=tokenizer, args=args)
     
     trainer = Seq2SeqTrainer(
-    model=model,
-    args=training_args,
-    **{k: v for k, v in data_module.items() if k != 'predict_dataset'},
-)
+        model=model,
+        args=training_args,
+        **{k: v for k, v in data_module.items() if k != 'predict_dataset'},
+    )
 
-    # Manually attach the tokenizer (new Trainer doesn’t accept it as arg)
+    # Manually attach the tokenizer (new Trainer doesn't accept it as arg)
     trainer.tokenizer = tokenizer
 
     # Verifying the datatypes and parameter counts before training.
