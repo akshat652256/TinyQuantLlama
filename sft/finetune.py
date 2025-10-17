@@ -541,7 +541,15 @@ def train():
         print("Model file path:", module.__file__)
     except Exception as e:
         print("Could not get model file path:", e)
-        
+    
+    print("\nConfig class:", model.config.__class__)
+    print("Config module:", model.config.__class__.__module__)
+    try:
+        config_module = importlib.import_module(model.config.__class__.__module__)
+        print("Config file path:", config_module.__file__)
+    except Exception as e:
+        print("Could not get config file path:", e)   
+    
     model.config.use_cache = False
     print('loaded model')
     set_seed(args.seed)
