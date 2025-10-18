@@ -264,48 +264,61 @@ def get_accelerate_model(args, checkpoint_dir):
         config.routing_layers = []
         config.router_reduction_factor = args.router_reduction_factor
     
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_name_or_path,
-        config=config,
-        device_map=device_map,
-        trust_remote_code=args.trust_remote_code,
-    )
-
-    # CRITICAL: Apply quantization BEFORE tokenizer loading
-    if hasattr(config, 'routing_layers') and len(config.routing_layers) > 0:
-        print("\n" + "="*60)
-        print("APPLYING INT8 QUANTIZATION TO ROUTING LAYERS")
-        print("="*60)
-        model = apply_quantization_to_routing_layers(model)
-        print("="*60 + "\n")
-        
-    # Tokenizer
+    # Tokenizer FIRST (before model loading)
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_name_or_path,
         padding_side="right",
         use_fast=True,
         trust_remote_code=args.trust_remote_code,
     )
+    
+    # Handle pad token BEFORE loading model
     if tokenizer.pad_token is None:
         special_tokens_dict = dict(pad_token=DEFAULT_PAD_TOKEN)
         if args.dataset == "OpenAssistant/oasst_top1_2023-08-25":
             chat_special_tokens = ["<|im_start|>", "<|im_end|>"]
             special_tokens_dict.update(additional_special_tokens=chat_special_tokens)
+        tokenizer.add_special_tokens(special_tokens_dict)
+    
+    # NOW load model with correct vocab size
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model_name_or_path,
+        config=config,
+        device_map=device_map,
+        trust_remote_code=args.trust_remote_code,
+    )
+    
+    # Resize embeddings if tokenizer was modified
+    if len(tokenizer) != model.get_input_embeddings().weight.shape[0]:
+        print(f"Resizing model embeddings from {model.get_input_embeddings().weight.shape[0]} to {len(tokenizer)}")
+        model.resize_token_embeddings(len(tokenizer))
 
-        smart_tokenizer_and_embedding_resize(
-            special_tokens_dict=special_tokens_dict,
-            tokenizer=tokenizer,
-            model=model
-        )
+    # CRITICAL: Apply quantization AFTER model is fully loaded and on correct device
+    if hasattr(config, 'routing_layers') and len(config.routing_layers) > 0:
+        print("\n" + "="*60)
+        print("APPLYING INT8 QUANTIZATION TO ROUTING LAYERS")
+        print("="*60)
+        
+        # Ensure model is on the correct device before quantization
+        if hasattr(model, 'hf_device_map'):
+            print(f"Model device map: {model.hf_device_map}")
+        
+        model = apply_quantization_to_routing_layers(model)
+        print("="*60 + "\n")
 
     return model, tokenizer
+
 
 def apply_quantization_to_routing_layers(model):
     """
     Apply quantization to mlp_quantized modules in routing layers
     after model is fully loaded
     """
-    from torchao.quantization import quantize_, int8_weight_only
+    try:
+        from torchao.quantization import quantize_, int8_weight_only
+    except ImportError:
+        print("ERROR: torchao not installed. Run: pip install torchao")
+        return model
     
     quantized_count = 0
     total_quantized_params = 0
@@ -319,28 +332,52 @@ def apply_quantization_to_routing_layers(model):
     # Navigate to the layers
     if hasattr(base_model, 'model'):
         layers = base_model.model.layers
-    else:
+    elif hasattr(base_model, 'layers'):
         layers = base_model.layers
+    else:
+        print("ERROR: Could not find layers in model")
+        return model
+    
+    print(f"Found {len(layers)} total layers in model")
     
     for layer_idx, layer in enumerate(layers):
-        if hasattr(layer, 'mlp_quantized') and hasattr(layer, 'routing') and layer.routing:
-            print(f"[Layer {layer_idx}] Quantizing mlp_quantized module...")
+        # Check if this layer has routing enabled
+        has_mlp_quantized = hasattr(layer, 'mlp_quantized')
+        has_routing_attr = hasattr(layer, 'routing')
+        is_routing_layer = has_routing_attr and layer.routing
+        
+        if has_mlp_quantized and is_routing_layer:
+            print(f"[Layer {layer_idx}] Found routing layer, applying quantization...")
             
             # Count parameters before quantization
             params_before = sum(p.numel() for p in layer.mlp_quantized.parameters())
             
-            # Apply quantization
-            quantize_(layer.mlp_quantized, int8_weight_only())
-            
-            quantized_count += 1
-            total_quantized_params += params_before
-            print(f"[Layer {layer_idx}] ✓ Quantized {params_before:,} parameters to INT8")
+            try:
+                # Apply quantization
+                quantize_(layer.mlp_quantized, int8_weight_only())
+                
+                quantized_count += 1
+                total_quantized_params += params_before
+                print(f"[Layer {layer_idx}] ✓ Quantized {params_before:,} parameters to INT8")
+            except Exception as e:
+                print(f"[Layer {layer_idx}] ✗ Quantization failed: {e}")
+        elif has_mlp_quantized and not is_routing_layer:
+            print(f"[Layer {layer_idx}] Has mlp_quantized but routing=False, skipping")
     
-    print(f"\n✓ Applied INT8 quantization to {quantized_count} routing layers")
-    print(f"✓ Total quantized parameters: {total_quantized_params:,}")
-    print(f"✓ Memory savings: ~{(total_quantized_params * 2) / (1024**2):.2f} MB → {(total_quantized_params) / (1024**2):.2f} MB")
+    if quantized_count == 0:
+        print("\n⚠️  WARNING: No layers were quantized!")
+        print("Debugging info:")
+        for idx, layer in enumerate(layers[:3]):  # Check first 3 layers
+            print(f"  Layer {idx}: has_mlp_quantized={hasattr(layer, 'mlp_quantized')}, "
+                  f"has_routing={hasattr(layer, 'routing')}, "
+                  f"routing={getattr(layer, 'routing', 'N/A')}")
+    else:
+        print(f"\n✓ Applied INT8 quantization to {quantized_count} routing layers")
+        print(f"✓ Total quantized parameters: {total_quantized_params:,}")
+        print(f"✓ Memory savings: ~{(total_quantized_params * 2) / (1024**2):.2f} MB → {(total_quantized_params) / (1024**2):.2f} MB")
     
     return model
+
 
 def print_trainable_parameters(args, model):
     """
