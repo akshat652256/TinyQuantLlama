@@ -2,6 +2,7 @@ import sys
 import importlib.util
 from types import ModuleType
 import torch.nn as nn
+import math
 
 # Create proper mock module with __spec__
 mock_bnb = ModuleType("bitsandbytes")
@@ -190,7 +191,21 @@ class GenerationArguments:
     no_repeat_ngram_size: Optional[int] = field(default=0)
 
 
-
+class PerplexityCallback(transformers.TrainerCallback):
+    """
+    Callback to compute and log perplexity alongside loss during training and evaluation.
+    """
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if logs is not None:
+            # Compute perplexity for training loss
+            if "loss" in logs:
+                logs["perplexity"] = math.exp(logs["loss"])
+            
+            # Compute perplexity for evaluation loss
+            if "eval_loss" in logs:
+                logs["eval_perplexity"] = math.exp(logs["eval_loss"])
+        
+        return control
 
 
 def get_accelerate_model(args, checkpoint_dir):
@@ -517,6 +532,15 @@ def get_last_checkpoint(checkpoint_dir):
         return checkpoint_dir, is_completed # checkpoint found!
     return None, False # first training
 
+def compute_metrics(eval_preds):
+    """
+    Compute perplexity from evaluation predictions.
+    For causal LM, the loss is already computed by the model.
+    """
+    # The Seq2SeqTrainer computes loss automatically
+    # We'll compute perplexity in the callback instead
+    return {}
+
 def train():
     hfparser = transformers.HfArgumentParser((
         ModelArguments, DataArguments, TrainingArguments, GenerationArguments
@@ -543,16 +567,11 @@ def train():
     
     trainer = Seq2SeqTrainer(
         model=model,
-        tokenizer=tokenizer,
         args=training_args,
-        **{k:v for k,v in data_module.items() if k != 'predict_dataset'},
+        **{k: v for k, v in data_module.items() if k != 'predict_dataset'},
+        callbacks=[PerplexityCallback()],  # Add the callback here
     )
 
-
-   
-        
-
-        
 
     # Verifying the datatypes and parameter counts before training.
     print_trainable_parameters(args, model)
