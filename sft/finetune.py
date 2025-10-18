@@ -634,7 +634,14 @@ def train():
         prediction_output = trainer.predict(test_dataset=data_module['predict_dataset'],metric_key_prefix="predict")
         prediction_metrics = prediction_output.metrics
         predictions = prediction_output.predictions
+        
+        # Replace -100 (IGNORE_INDEX) with pad_token_id
         predictions = np.where(predictions != -100, predictions, tokenizer.pad_token_id)
+        
+        # Convert to list and ensure proper format for decoding
+        predictions = predictions.tolist()
+        
+        # Decode predictions
         predictions = tokenizer.batch_decode(
             predictions, skip_special_tokens=True, clean_up_tokenization_spaces=True
         )
