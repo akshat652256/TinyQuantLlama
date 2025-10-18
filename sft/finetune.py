@@ -238,7 +238,6 @@ class QuantizationStatsCallback(transformers.TrainerCallback):
         return control
 
 def get_accelerate_model(args, checkpoint_dir):
-
     device_map = "auto"
 
     # if we are in a distributed setting, we need to set the device map and max memory per device
@@ -272,15 +271,19 @@ def get_accelerate_model(args, checkpoint_dir):
         trust_remote_code=args.trust_remote_code,
     )
 
+    # CRITICAL: Apply quantization BEFORE tokenizer loading
     if hasattr(config, 'routing_layers') and len(config.routing_layers) > 0:
-        print("Applying INT8 quantization to routing layers...")
+        print("\n" + "="*60)
+        print("APPLYING INT8 QUANTIZATION TO ROUTING LAYERS")
+        print("="*60)
         model = apply_quantization_to_routing_layers(model)
+        print("="*60 + "\n")
         
     # Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_name_or_path,
         padding_side="right",
-        use_fast=True, # Fast tokenizer giving issues.
+        use_fast=True,
         trust_remote_code=args.trust_remote_code,
     )
     if tokenizer.pad_token is None:
@@ -305,13 +308,38 @@ def apply_quantization_to_routing_layers(model):
     from torchao.quantization import quantize_, int8_weight_only
     
     quantized_count = 0
-    for name, module in model.named_modules():
-        if hasattr(module, 'mlp_quantized'):
-            print(f"Quantizing {name}.mlp_quantized...")
-            quantize_(module.mlp_quantized, int8_weight_only())
-            quantized_count += 1
+    total_quantized_params = 0
     
-    print(f"Applied INT8 quantization to {quantized_count} routing layers")
+    # Access model directly (handle DataParallel/DDP wrappers)
+    if hasattr(model, 'module'):
+        base_model = model.module
+    else:
+        base_model = model
+    
+    # Navigate to the layers
+    if hasattr(base_model, 'model'):
+        layers = base_model.model.layers
+    else:
+        layers = base_model.layers
+    
+    for layer_idx, layer in enumerate(layers):
+        if hasattr(layer, 'mlp_quantized') and hasattr(layer, 'routing') and layer.routing:
+            print(f"[Layer {layer_idx}] Quantizing mlp_quantized module...")
+            
+            # Count parameters before quantization
+            params_before = sum(p.numel() for p in layer.mlp_quantized.parameters())
+            
+            # Apply quantization
+            quantize_(layer.mlp_quantized, int8_weight_only())
+            
+            quantized_count += 1
+            total_quantized_params += params_before
+            print(f"[Layer {layer_idx}] ✓ Quantized {params_before:,} parameters to INT8")
+    
+    print(f"\n✓ Applied INT8 quantization to {quantized_count} routing layers")
+    print(f"✓ Total quantized parameters: {total_quantized_params:,}")
+    print(f"✓ Memory savings: ~{(total_quantized_params * 2) / (1024**2):.2f} MB → {(total_quantized_params) / (1024**2):.2f} MB")
+    
     return model
 
 def print_trainable_parameters(args, model):
@@ -321,45 +349,55 @@ def print_trainable_parameters(args, model):
     trainable_params = 0
     all_param = 0
     router_params = 0
-    quantized_params = 0  
-    fp_mlp_params = 0     
+    quantized_mlp_params = 0
+    fp_mlp_params = 0
+    
+    # Track dtypes including quantized
+    quantized_count = 0
     
     for name, param in model.named_parameters():
-        all_param += param.numel()
+        param_count = param.numel()
+        all_param += param_count
+        
         if param.requires_grad:
-            trainable_params += param.numel()
+            trainable_params += param_count
         
         # Count router parameters
-        if 'router' in name.lower() and 'mlp' not in name:  # MODIFIED THIS LINE
-            router_params += param.numel()
+        if 'router' in name.lower() and 'mlp' not in name:
+            router_params += param_count
+        
         # Count quantized MLP parameters
         if 'mlp_quantized' in name:
-            quantized_params += param.numel()
+            quantized_mlp_params += param_count
+            # Check if this is actually a quantized tensor
+            if hasattr(param, '__class__') and 'Quantized' in param.__class__.__name__:
+                quantized_count += 1
         
         # Count full-precision MLP parameters (excluding quantized)
-        if 'mlp.' in name and 'mlp_quantized' not in name:
-            fp_mlp_params += param.numel()
+        if '.mlp.' in name and 'mlp_quantized' not in name:
+            fp_mlp_params += param_count
     
-    print(
-        f"trainable params: {trainable_params} || "
-        f"all params: {all_param} || "
-        f"trainable%: {100 * trainable_params / all_param:.2f}%"
-    ) 
+    print("\n" + "="*60)
+    print("MODEL PARAMETER SUMMARY")
+    print("="*60)
+    print(f"Total params:         {all_param:,} ({all_param/1e9:.2f}B)")
+    print(f"Trainable params:     {trainable_params:,} ({100 * trainable_params / all_param:.2f}%)")
+    
     if router_params > 0:
-        print(f"router params: {router_params} || router%: {100 * router_params / all_param:.2f}%")
-    if fp_mlp_params > 0:
-        print(f"full-precision MLP params: {fp_mlp_params} || fp_mlp%: {100 * fp_mlp_params / all_param:.2f}%")
+        print(f"\nRouter params:        {router_params:,} ({100 * router_params / all_param:.2f}%)")
     
-    if quantized_params > 0:
-        print(f"quantized MLP params: {quantized_params} || quantized%: {100 * quantized_params / all_param:.2f}%")
-        # Calculate memory savings from quantization
-        if quantized_params > 0:
-            # Assuming INT8 quantization (8 bits) vs FP16 (16 bits)
-            fp16_size_mb = (quantized_params * 2) / (1024 * 1024)  # FP16 = 2 bytes per param
-            int8_size_mb = quantized_params / (1024 * 1024)        # INT8 = 1 byte per param
-            savings_mb = fp16_size_mb - int8_size_mb
-            print(f"Memory savings from quantization: {savings_mb:.2f} MB ({(savings_mb/fp16_size_mb)*100:.1f}% reduction)")
-   
+    if fp_mlp_params > 0:
+        print(f"FP MLP params:        {fp_mlp_params:,} ({100 * fp_mlp_params / all_param:.2f}%)")
+    
+    if quantized_mlp_params > 0:
+        print(f"Quantized MLP params: {quantized_mlp_params:,} ({100 * quantized_mlp_params / all_param:.2f}%)")
+        fp16_size_mb = (quantized_mlp_params * 2) / (1024 * 1024)
+        int8_size_mb = quantized_mlp_params / (1024 * 1024)
+        savings_mb = fp16_size_mb - int8_size_mb
+        print(f"Memory savings:       {savings_mb:.2f} MB ({(savings_mb/fp16_size_mb)*100:.1f}% reduction)")
+        print(f"Quantized tensors:    {quantized_count} weight matrices")
+    
+    print("="*60 + "\n")
 
 def smart_tokenizer_and_embedding_resize(
     special_tokens_dict: Dict,
