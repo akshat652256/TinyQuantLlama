@@ -389,8 +389,8 @@ def print_trainable_parameters(args, model):
     quantized_mlp_params = 0
     fp_mlp_params = 0
     
-    # Track dtypes including quantized
-    quantized_count = 0
+    # Track quantized tensors more carefully
+    quantized_tensors = []
     
     for name, param in model.named_parameters():
         param_count = param.numel()
@@ -403,14 +403,16 @@ def print_trainable_parameters(args, model):
         if 'router' in name.lower() and 'mlp' not in name:
             router_params += param_count
         
-        # Count quantized MLP parameters
+        # Count quantized MLP parameters - CHECK CLASS NAME
         if 'mlp_quantized' in name:
             quantized_mlp_params += param_count
-            # Check if this is actually a quantized tensor
-            if hasattr(param, '__class__') and 'Quantized' in param.__class__.__name__:
-                quantized_count += 1
+            
+            # **CHECK IF IT'S ACTUALLY A QUANTIZED TENSOR**
+            tensor_class = param.__class__.__name__
+            if 'Quantized' in tensor_class or 'AffineQuantized' in tensor_class:
+                quantized_tensors.append((name, tensor_class, param.shape))
         
-        # Count full-precision MLP parameters (excluding quantized)
+        # Count full-precision MLP parameters
         if '.mlp.' in name and 'mlp_quantized' not in name:
             fp_mlp_params += param_count
     
@@ -428,13 +430,17 @@ def print_trainable_parameters(args, model):
     
     if quantized_mlp_params > 0:
         print(f"Quantized MLP params: {quantized_mlp_params:,} ({100 * quantized_mlp_params / all_param:.2f}%)")
-        fp16_size_mb = (quantized_mlp_params * 2) / (1024 * 1024)
-        int8_size_mb = quantized_mlp_params / (1024 * 1024)
-        savings_mb = fp16_size_mb - int8_size_mb
-        print(f"Memory savings:       {savings_mb:.2f} MB ({(savings_mb/fp16_size_mb)*100:.1f}% reduction)")
-        print(f"Quantized tensors:    {quantized_count} weight matrices")
+        
+    # **PRINT ACTUAL QUANTIZED TENSORS**
+    if quantized_tensors:
+        print(f"\n✓ FOUND {len(quantized_tensors)} QUANTIZED TENSORS:")
+        for name, cls, shape in quantized_tensors[:5]:  # Show first 5
+            print(f"  - {name}: {cls}, shape={shape}")
+    else:
+        print("\n⚠️  NO QUANTIZED TENSORS FOUND - Quantization may not have been applied!")
     
     print("="*60 + "\n")
+
 
 def smart_tokenizer_and_embedding_resize(
     special_tokens_dict: Dict,
