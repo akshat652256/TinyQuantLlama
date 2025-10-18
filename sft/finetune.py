@@ -272,6 +272,10 @@ def get_accelerate_model(args, checkpoint_dir):
         trust_remote_code=args.trust_remote_code,
     )
 
+    if hasattr(config, 'routing_layers') and len(config.routing_layers) > 0:
+        print("Applying INT8 quantization to routing layers...")
+        model = apply_quantization_to_routing_layers(model)
+        
     # Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_name_or_path,
@@ -292,6 +296,23 @@ def get_accelerate_model(args, checkpoint_dir):
         )
 
     return model, tokenizer
+
+def apply_quantization_to_routing_layers(model):
+    """
+    Apply quantization to mlp_quantized modules in routing layers
+    after model is fully loaded
+    """
+    from torchao.quantization import quantize_, int8_weight_only
+    
+    quantized_count = 0
+    for name, module in model.named_modules():
+        if hasattr(module, 'mlp_quantized'):
+            print(f"Quantizing {name}.mlp_quantized...")
+            quantize_(module.mlp_quantized, int8_weight_only())
+            quantized_count += 1
+    
+    print(f"Applied INT8 quantization to {quantized_count} routing layers")
+    return model
 
 def print_trainable_parameters(args, model):
     """
