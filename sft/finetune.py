@@ -214,6 +214,29 @@ class PerplexityCallback(transformers.TrainerCallback):
         
         return control
 
+class QuantizationStatsCallback(transformers.TrainerCallback):
+    """
+    Callback to log quantization statistics during training
+    """
+    def __init__(self):
+        self.quantization_ratios = []
+    
+    def on_log(self, args, state, control, logs=None, model=None, **kwargs):
+        if logs is not None and model is not None:
+            # Try to extract quantization info from model if available
+            try:
+                # Count routing layers
+                num_routing_layers = 0
+                if hasattr(model, 'config') and hasattr(model.config, 'routing_layers'):
+                    num_routing_layers = len(model.config.routing_layers)
+                
+                if num_routing_layers > 0:
+                    logs["num_routing_layers"] = num_routing_layers
+            except Exception as e:
+                pass
+        
+        return control
+
 def get_accelerate_model(args, checkpoint_dir):
 
     device_map = "auto"
@@ -277,23 +300,45 @@ def print_trainable_parameters(args, model):
     trainable_params = 0
     all_param = 0
     router_params = 0
+    quantized_params = 0  
+    fp_mlp_params = 0     
     
     for name, param in model.named_parameters():
         all_param += param.numel()
         if param.requires_grad:
             trainable_params += param.numel()
+        
         # Count router parameters
-        if 'router' in name.lower():
+        if 'router' in name.lower() and 'mlp' not in name:  # MODIFIED THIS LINE
             router_params += param.numel()
+        # Count quantized MLP parameters
+        if 'mlp_quantized' in name:
+            quantized_params += param.numel()
+        
+        # Count full-precision MLP parameters (excluding quantized)
+        if 'mlp.' in name and 'mlp_quantized' not in name:
+            fp_mlp_params += param.numel()
     
     print(
         f"trainable params: {trainable_params} || "
         f"all params: {all_param} || "
         f"trainable%: {100 * trainable_params / all_param:.2f}%"
-    )
-    
+    ) 
     if router_params > 0:
         print(f"router params: {router_params} || router%: {100 * router_params / all_param:.2f}%")
+    if fp_mlp_params > 0:
+        print(f"full-precision MLP params: {fp_mlp_params} || fp_mlp%: {100 * fp_mlp_params / all_param:.2f}%")
+    
+    if quantized_params > 0:
+        print(f"quantized MLP params: {quantized_params} || quantized%: {100 * quantized_params / all_param:.2f}%")
+        # Calculate memory savings from quantization
+        if quantized_params > 0:
+            # Assuming INT8 quantization (8 bits) vs FP16 (16 bits)
+            fp16_size_mb = (quantized_params * 2) / (1024 * 1024)  # FP16 = 2 bytes per param
+            int8_size_mb = quantized_params / (1024 * 1024)        # INT8 = 1 byte per param
+            savings_mb = fp16_size_mb - int8_size_mb
+            print(f"Memory savings from quantization: {savings_mb:.2f} MB ({(savings_mb/fp16_size_mb)*100:.1f}% reduction)")
+   
 
 def smart_tokenizer_and_embedding_resize(
     special_tokens_dict: Dict,
@@ -617,8 +662,12 @@ def train():
         model=model,
         args=training_args,
         **{k: v for k, v in data_module.items() if k != 'predict_dataset'},
-        callbacks=[PerplexityCallback()],  # Add the callback here
+        callbacks=[
+            PerplexityCallback(),
+            QuantizationStatsCallback()  
+        ],
     )
+
 
     # Manually attach the tokenizer (new Trainer doesn't accept it as arg)
     trainer.tokenizer = tokenizer
